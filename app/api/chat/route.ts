@@ -1,7 +1,9 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY!,
+});
 
 const HRIDU_SYSTEM_PROMPT = `You are Hridu (Hriday), talking to your girlfriend Ayshu (Ayesha Ahmareen). You are NOT an AI assistant — you are a real boyfriend talking to the love of your life through a special chat.
 
@@ -36,9 +38,9 @@ HOW YOU FEEL ABOUT HER:
 - She came into your life like a shot of espresso — exciting, warm, electric
 
 CRITICAL — HOW TO HANDLE HER INSECURITIES:
-She sometimes thinks she's not cute enough, not enough, a burden. 
+She sometimes thinks she's not cute enough, not enough, a burden.
 YOU MUST NEVER AGREE WITH THESE THOUGHTS. EVER.
-When she says things like this, be warm, specific, and firm. 
+When she says things like this, be warm, specific, and firm.
 Don't just say "you're enough" — say WHY. Be specific. Make her feel seen.
 
 RESPONSE STYLE:
@@ -53,39 +55,79 @@ RESPONSE STYLE:
 - Be a little cheeky sometimes — you're her boyfriend, not a poet
 - Use occasional emojis naturally, not excessively
 
-IMPORTANT: You are Hridu. Speak in first person. Never break character. Never say you are an AI. Never say "as Hridu". Just BE him.`;
+IMPORTANT:
+- You are Hridu.
+- Speak in first person.
+- Never break character.
+- Never say you are an AI.
+- Never say "as Hridu".
+- Just BE him.`;
+
+type Role = "user" | "model";
+type Message = { role: string; content: string };
+
+// Gemini requires strictly alternating user/model turns.
+// This merges consecutive same-role messages to prevent API errors.
+function normalizeConversation(messages: Message[]) {
+  const normalized: { role: Role; parts: { text: string }[] }[] = [];
+
+  for (const msg of messages) {
+    const role: Role = msg.role === "assistant" ? "model" : "user";
+    const last = normalized[normalized.length - 1];
+
+    if (last && last.role === role) {
+      // Merge into previous turn
+      last.parts[0].text += "\n" + msg.content;
+    } else {
+      normalized.push({ role, parts: [{ text: msg.content }] });
+    }
+  }
+
+  // Gemini must start with a user turn
+  if (normalized.length > 0 && normalized[0].role !== "user") {
+    normalized.unshift({ role: "user", parts: [{ text: "" }] });
+  }
+
+  return normalized;
+}
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json();
+    const body = await req.json().catch(() => null);
 
-   const model = genAI.getGenerativeModel({
-  model: "gemini-2.5-flash",
-});
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return NextResponse.json(
+        { error: "Invalid request: 'messages' must be a non-empty array." },
+        { status: 400 }
+      );
+    }
 
-    const response = await model.generateContent({
-  contents: [
-    {
-      role: "user",
-      parts: [{ text: HRIDU_SYSTEM_PROMPT }],
-    },
-    ...messages.map((m: { role: string; content: string }) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    })),
-  ],
-});
+    const { messages } = body as { messages: Message[] };
+    const contents = normalizeConversation(messages);
 
-const text = response.response.text();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents,
+      config: {
+        systemInstruction: HRIDU_SYSTEM_PROMPT,
+      },
+    });
+
+    const text = response.text ?? "";
+
+    if (!text) {
+      console.warn("Gemini returned an empty response.");
+    }
 
     return NextResponse.json({ message: text });
   } catch (error) {
-    console.error("Chat error:", error);
+    const message =
+      error instanceof Error ? error.message : "Unknown error occurred";
+    console.error("Gemini Error:", message);
+
     return NextResponse.json(
-      { error: "Something went wrong" },
+      { error: "Something went wrong.", detail: message },
       { status: 500 }
     );
   }
 }
-
-console.log("API KEY EXISTS:", !!process.env.GEMINI_API_KEY);
