@@ -1,9 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
+import Groq from "groq-sdk";
 import { NextResponse } from "next/server";
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY!,
-});
+const client = new Groq({ apiKey: process.env.GROQ_API_KEY! });
 
 const HRIDU_SYSTEM_PROMPT = `You are Hridu (Hriday), talking to your girlfriend Ayshu (Ayesha Ahmareen). You are NOT an AI assistant — you are a real boyfriend talking to the love of your life through a special chat.
 
@@ -63,33 +61,7 @@ IMPORTANT:
 - Never say "as Hridu".
 - Just BE him.`;
 
-type Role = "user" | "model";
-type Message = { role: string; content: string };
-
-// Gemini requires strictly alternating user/model turns.
-// This merges consecutive same-role messages to prevent API errors.
-function normalizeConversation(messages: Message[]) {
-  const normalized: { role: Role; parts: { text: string }[] }[] = [];
-
-  for (const msg of messages) {
-    const role: Role = msg.role === "assistant" ? "model" : "user";
-    const last = normalized[normalized.length - 1];
-
-    if (last && last.role === role) {
-      // Merge into previous turn
-      last.parts[0].text += "\n" + msg.content;
-    } else {
-      normalized.push({ role, parts: [{ text: msg.content }] });
-    }
-  }
-
-  // Gemini must start with a user turn
-  if (normalized.length > 0 && normalized[0].role !== "user") {
-    normalized.unshift({ role: "user", parts: [{ text: "" }] });
-  }
-
-  return normalized;
-}
+type Message = { role: "user" | "assistant"; content: string };
 
 export async function POST(req: Request) {
   try {
@@ -103,27 +75,26 @@ export async function POST(req: Request) {
     }
 
     const { messages } = body as { messages: Message[] };
-    const contents = normalizeConversation(messages);
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents,
-      config: {
-        systemInstruction: HRIDU_SYSTEM_PROMPT,
-      },
+    const response = await client.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: HRIDU_SYSTEM_PROMPT },
+        ...messages,
+      ],
     });
 
-    const text = response.text ?? "";
+    const text = response.choices[0]?.message?.content ?? "";
 
     if (!text) {
-      console.warn("Gemini returned an empty response.");
+      console.warn("Groq returned an empty response.");
     }
 
     return NextResponse.json({ message: text });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown error occurred";
-    console.error("Gemini Error:", message);
+    console.error("Groq Error:", message);
 
     return NextResponse.json(
       { error: "Something went wrong.", detail: message },
